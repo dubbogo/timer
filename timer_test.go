@@ -24,6 +24,7 @@ import (
 )
 
 func TestGetTimerWheel(t *testing.T) {
+	InitDefaultTimerWheel()
 	tw := GetDefaultTimerWheel()
 	if tw == nil {
 		t.Fatal("default time wheel is nil")
@@ -61,4 +62,11 @@ func TestGetEndTime(t *testing.T) {
 
 	yearEndTime := GetEndtime("year")
 	t.Logf("this year end time %q", yearEndTime)
+}
+
+func TestTimerConsumerGoroutine(t *testing.T) {
+	InitDefaultTimerWheel()
+	time.Sleep(time.Second * 2)
+	println("sleep over")
+	<-defaultTimerWheel.After(1)
 }

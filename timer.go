@@ -39,7 +39,7 @@ var (
 )
 
 // InitDefaultTimerWheel initializes a default timer wheel
-func init() {
+func InitDefaultTimerWheel() {
 	defaultTimerWheelOnce.Do(func() {
 		defaultTimerWheel = NewTimerWheel()
 	})
@@ -90,16 +90,16 @@ type TimerFunc func(ID TimerID, expire time.Time, arg interface{}) error
 type TimerID = uint64
 
 type timerNode struct {
-	ID       TimerID
-	trig     int64
-	typ      TimerType
-	period   int64
-	timerRun TimerFunc
-	arg      interface{}
+	ID       TimerID     // node id
+	trig     int64       // trigger time
+	typ      TimerType   // once or loop
+	period   int64       // loop period
+	timerRun TimerFunc   // timer func
+	arg      interface{} // func arg
 }
 
-func newTimerNode(f TimerFunc, typ TimerType, period int64, arg interface{}) timerNode {
-	return timerNode{
+func newTimerNode(f TimerFunc, typ TimerType, period int64, arg interface{}) *timerNode {
+	return &timerNode{
 		ID:       atomic.AddUint64(&nextID, 1),
 		trig:     atomic.LoadInt64(&curGxTime) + period,
 		typ:      typ,
@@ -109,7 +109,7 @@ func newTimerNode(f TimerFunc, typ TimerType, period int64, arg interface{}) tim
 	}
 }
 
-func compareTimerNode(first, second timerNode) int {
+func compareTimerNode(first, second *timerNode) int {
 	var ret int
 
 	if first.trig < second.trig {
@@ -126,13 +126,13 @@ func compareTimerNode(first, second timerNode) int {
 type timerAction = int64
 
 const (
-	ADD_TIMER   timerAction = 1
-	DEL_TIMER   timerAction = 2
-	RESET_TIMER timerAction = 3
+	TimerActionAdd   timerAction = 1
+	TimerActionDel   timerAction = 2
+	TimerActionReset timerAction = 3
 )
 
 type timerNodeAction struct {
-	node   timerNode
+	node   *timerNode
 	action timerAction
 }
 
@@ -163,12 +163,12 @@ type TimerWheel struct {
 	hand   [maxTimerLevel]int64      // clock
 	slot   [maxTimerLevel]*list.List // timer list
 
-	enable uatomic.Bool
-	timerQ chan timerNodeAction
+	enable uatomic.Bool          // timer ready or closed
+	timerQ chan *timerNodeAction // timer event notify channel
 
-	once   sync.Once // for close ticker
-	ticker *time.Ticker
-	wg     sync.WaitGroup
+	once   sync.Once      // for close ticker
+	ticker *time.Ticker   // virtual atomic clock
+	wg     sync.WaitGroup // gr sync
 }
 
 // NewTimerWheel returns a @TimerWheel object.
@@ -177,8 +177,10 @@ func NewTimerWheel() *TimerWheel {
 		clock: atomic.LoadInt64(&curGxTime),
 		// in fact, the minimum time accuracy is 10ms.
 		ticker: time.NewTicker(time.Duration(minTickerInterval)),
-		timerQ: make(chan timerNodeAction, timerNodeQueueSize),
+		timerQ: make(chan *timerNodeAction, timerNodeQueueSize),
 	}
+
+	w.enable.Store(true)
 	w.start = w.clock
 
 	for i := 0; i < maxTimerLevel; i++ {
@@ -191,7 +193,7 @@ func NewTimerWheel() *TimerWheel {
 		var (
 			t          time.Time
 			cFlag      bool
-			nodeAction timerNodeAction
+			nodeAction *timerNodeAction
 			qFlag      bool
 		)
 
@@ -200,53 +202,49 @@ func NewTimerWheel() *TimerWheel {
 			if !w.enable.Load() {
 				break LOOP
 			}
+
 			select {
 			case t, cFlag = <-w.ticker.C:
+				if !cFlag {
+					break LOOP
+				}
+
 				atomic.StoreInt64(&curGxTime, t.UnixNano())
-				if cFlag && 0 != w.number.Load() {
-					ret := w.timerUpdate(t)
-					if ret == 0 {
-						w.run()
-					}
-
-					continue
+				ret := w.timerUpdate(t)
+				if ret == 0 {
+					w.run()
 				}
-
-				break LOOP
-
 			case nodeAction, qFlag = <-w.timerQ:
-				// just one w.timerQ channel to ensure the exec sequence of timer event.
-				if qFlag {
-					switch {
-					case nodeAction.action == ADD_TIMER:
-						w.number.Add(1)
-						w.insertTimerNode(nodeAction.node)
-					case nodeAction.action == DEL_TIMER:
-						w.number.Add(-1)
-						w.deleteTimerNode(nodeAction.node)
-					case nodeAction.action == RESET_TIMER:
-						// log.CInfo("node action:%#v", nodeAction)
-						w.resetTimerNode(nodeAction.node)
-					default:
-						w.number.Add(1)
-						w.insertTimerNode(nodeAction.node)
-					}
-					continue
+				if !qFlag {
+					break LOOP
 				}
 
-				break LOOP
+				// just one w.timerQ channel to ensure the exec sequence of timer event.
+				switch {
+				case nodeAction.action == TimerActionAdd:
+					w.number.Add(1)
+					w.insertTimerNode(nodeAction.node)
+				case nodeAction.action == TimerActionDel:
+					w.number.Add(-1)
+					w.deleteTimerNode(nodeAction.node)
+				case nodeAction.action == TimerActionReset:
+					// log.CInfo("node action:%#v", nodeAction)
+					w.resetTimerNode(nodeAction.node)
+				default:
+					w.number.Add(1)
+					w.insertTimerNode(nodeAction.node)
+				}
 			}
 		}
+		log.Printf("the timeWheel runner exit, current timer node num:%d", w.number.Load())
 	}()
-
-	w.enable.Store(true)
 	return w
 }
 
 func (w *TimerWheel) output() {
 	for idx := range w.slot {
 		log.Printf("print slot %d\n", idx)
-		//w.slot[idx].Output()
+		// w.slot[idx].Output()
 	}
 }
 
@@ -262,25 +260,25 @@ func (w *TimerWheel) Now() time.Time {
 
 func (w *TimerWheel) run() {
 	var (
-		clock int64
-		err   error
-		node  timerNode
-		slot  *list.List
-		array []timerNode
+		clock         int64
+		err           error
+		node          *timerNode
+		slot          *list.List
+		reinsertNodes []*timerNode
 	)
 
 	slot = w.slot[0]
 	clock = atomic.LoadInt64(&w.clock)
 	var next *list.Element
 	for e := slot.Front(); e != nil; e = next {
-		node = e.Value.(timerNode)
+		node = e.Value.(*timerNode)
 		if clock < node.trig {
 			break
 		}
 
 		err = node.timerRun(node.ID, UnixNano2Time(clock), node.arg)
 		if err == nil && node.typ == TimerLoop {
-			array = append(array, node)
+			reinsertNodes = append(reinsertNodes, node)
 			// w.insertTimerNode(node)
 		} else {
 			w.number.Add(-1)
@@ -289,13 +287,14 @@ func (w *TimerWheel) run() {
 		next = e.Next()
 		slot.Remove(e)
 	}
-	for idx := range array[:] {
-		array[idx].trig += array[idx].period
-		w.insertTimerNode(array[idx])
+
+	for _, reinsertNode := range reinsertNodes {
+		reinsertNode.trig += reinsertNode.period
+		w.insertTimerNode(reinsertNode)
 	}
 }
 
-func (w *TimerWheel) insertSlot(idx int, node timerNode) {
+func (w *TimerWheel) insertSlot(idx int, node *timerNode) {
 	var (
 		pos  *list.Element
 		slot *list.List
@@ -303,7 +302,7 @@ func (w *TimerWheel) insertSlot(idx int, node timerNode) {
 
 	slot = w.slot[idx]
 	for e := slot.Front(); e != nil; e = e.Next() {
-		if compareTimerNode(node, e.Value.(timerNode)) < 0 {
+		if compareTimerNode(node, e.Value.(*timerNode)) < 0 {
 			pos = e
 			break
 		}
@@ -318,15 +317,13 @@ func (w *TimerWheel) insertSlot(idx int, node timerNode) {
 	}
 }
 
-func (w *TimerWheel) deleteTimerNode(node timerNode) {
-	var (
-		level int
-	)
+func (w *TimerWheel) deleteTimerNode(node *timerNode) {
+	var level int
 
 LOOP:
 	for level = range w.slot[:] {
 		for e := w.slot[level].Front(); e != nil; e = e.Next() {
-			if e.Value.(timerNode).ID == node.ID {
+			if e.Value.(*timerNode).ID == node.ID {
 				w.slot[level].Remove(e)
 				// atomic.AddInt64(&w.number, -1)
 				break LOOP
@@ -335,16 +332,14 @@ LOOP:
 	}
 }
 
-func (w *TimerWheel) resetTimerNode(node timerNode) {
-	var (
-		level int
-	)
+func (w *TimerWheel) resetTimerNode(node *timerNode) {
+	var level int
 
 LOOP:
 	for level = range w.slot[:] {
 		for e := w.slot[level].Front(); e != nil; e = e.Next() {
-			if e.Value.(timerNode).ID == node.ID {
-				n := e.Value.(timerNode)
+			if e.Value.(*timerNode).ID == node.ID {
+				n := e.Value.(*timerNode)
 				n.trig -= n.period
 				n.period = node.period
 				n.trig += n.period
@@ -357,9 +352,7 @@ LOOP:
 }
 
 func (w *TimerWheel) deltaDiff(clock int64) int64 {
-	var (
-		handTime int64
-	)
+	var handTime int64
 
 	for idx, hand := range w.hand[:] {
 		handTime += hand * msLimit[idx]
@@ -368,7 +361,7 @@ func (w *TimerWheel) deltaDiff(clock int64) int64 {
 	return clock - w.start - handTime
 }
 
-func (w *TimerWheel) insertTimerNode(node timerNode) {
+func (w *TimerWheel) insertTimerNode(node *timerNode) {
 	var (
 		idx  int
 		diff int64
@@ -398,13 +391,13 @@ func (w *TimerWheel) timerCascade(level int) {
 		guard bool
 		clock int64
 		diff  int64
-		cur   timerNode
+		cur   *timerNode
 	)
 
 	clock = atomic.LoadInt64(&w.clock)
 	var next *list.Element
 	for e := w.slot[level].Front(); e != nil; e = next {
-		cur = e.Value.(timerNode)
+		cur = e.Value.(*timerNode)
 		diff = cur.trig - clock
 		switch {
 		case cur.trig <= clock:
@@ -516,7 +509,7 @@ func (w *TimerWheel) AddTimer(f TimerFunc, typ TimerType, period time.Duration, 
 	t := &Timer{w: w}
 	node := newTimerNode(f, typ, int64(period), arg)
 	select {
-	case w.timerQ <- timerNodeAction{node: node, action: ADD_TIMER}:
+	case w.timerQ <- &timerNodeAction{node: node, action: TimerActionAdd}:
 		t.ID = node.ID
 		return t, nil
 	default:
@@ -531,7 +524,7 @@ func (w *TimerWheel) deleteTimer(t *Timer) error {
 	}
 
 	select {
-	case w.timerQ <- timerNodeAction{action: DEL_TIMER, node: timerNode{ID: t.ID}}:
+	case w.timerQ <- &timerNodeAction{action: TimerActionDel, node: &timerNode{ID: t.ID}}:
 		return nil
 	default:
 	}
@@ -545,7 +538,7 @@ func (w *TimerWheel) resetTimer(t *Timer, d time.Duration) error {
 	}
 
 	select {
-	case w.timerQ <- timerNodeAction{action: RESET_TIMER, node: timerNode{ID: t.ID, period: int64(d)}}:
+	case w.timerQ <- &timerNodeAction{action: TimerActionReset, node: &timerNode{ID: t.ID, period: int64(d)}}:
 		return nil
 	default:
 	}

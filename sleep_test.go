@@ -109,6 +109,8 @@ func TestAfterFunc(t *testing.T) {
 		cw CountWatch
 	)
 
+	InitDefaultTimerWheel()
+
 	f := func() {
 		defer wg.Done()
 		gxlog.CInfo("timer costs:%dms", cw.Count()/1e6)
@@ -133,6 +135,8 @@ func TestTimer_Reset(t *testing.T) {
 		cw    CountWatch
 	)
 
+	InitDefaultTimerWheel()
+
 	f := func() {
 		defer wg.Done()
 		gxlog.CInfo("timer costs:%dms", cw.Count()/1e6)
@@ -154,6 +158,8 @@ func TestTimer_Stop(t *testing.T) {
 		timer *Timer
 		cw    CountWatch
 	)
+
+	InitDefaultTimerWheel()
 
 	f := func() {
 		gxlog.CInfo("timer costs:%dms", cw.Count()/1e6)
