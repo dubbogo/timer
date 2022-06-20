@@ -1,0 +1,26 @@
+# github.com/davecgh/go-spew v1.1.1
+github.com/davecgh/go-spew/spew
+# github.com/dubbogo/gost v1.12.3
+## explicit
+github.com/dubbogo/gost/container/chan
+github.com/dubbogo/gost/container/queue
+github.com/dubbogo/gost/log
+# github.com/k0kubun/pp v3.0.1+incompatible
+github.com/k0kubun/pp
+# github.com/mattn/go-colorable v0.1.7
+github.com/mattn/go-colorable
+# github.com/mattn/go-isatty v0.0.12
+github.com/mattn/go-isatty
+# github.com/pmezard/go-difflib v1.0.0
+github.com/pmezard/go-difflib/difflib
+# github.com/stretchr/testify v1.7.0
+## explicit
+github.com/stretchr/testify/assert
+# go.uber.org/atomic v1.7.0
+## explicit
+go.uber.org/atomic
+# golang.org/x/sys v0.0.0-20220128215802-99c3d69c2c27
+golang.org/x/sys/internal/unsafeheader
+golang.org/x/sys/unix
+# gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c
+gopkg.in/yaml.v3

@@ -98,7 +98,7 @@ func Time2UnixNano(t time.Time) int64 {
 	return t.UnixNano()
 }
 
-func GetEndtime(format string) time.Time {
+func GetEndTime(format string) time.Time {
 	timeNow := time.Now()
 	switch format {
 	case "day":
